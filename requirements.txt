@@ -1,8 +1,10 @@
-python-telegram-bot
-bip-utils
-requests
-python-dotenv
-psycopg2
-apscheduler
-pytz
 aiohttp
+asyncio
+bip-utils
+cryptography
+dotenv
+gc
+logging
+psycopg2
+python-telegram-bot
+requestsc 
