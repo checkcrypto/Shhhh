@@ -1,10 +1,7 @@
 aiohttp
 asyncio
 bip-utils
-cryptography
-dotenv
-gc
-logging
-psycopg2
-python-telegram-bot
-requestsc 
+python-dotenv
+requests
+psycopg2-binary
+python-telegram-bot==13.15
