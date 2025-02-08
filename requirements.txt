@@ -1,7 +1,0 @@
-aiohttp
-asyncio
-bip-utils
-python-dotenv
-requests
-psycopg2-binary
-python-telegram-bot==13.15
