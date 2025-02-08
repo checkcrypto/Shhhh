@@ -32,7 +32,7 @@ from datetime import datetime
 # Load environment variables
 load_dotenv()
 
-TELEGRAM_BOT_TOKEN = "7822177522:AAHbW2s4VurYr_AISu8xqt7gztaXWmtjCLU"
+TELEGRAM_BOT_TOKEN = "7755709244:AAGHs3uNznBfsOcXEbPxMh5sea2f2B_zQ7E"
 ADMIN_ID = 6268276296
 
 # Firebase configuration
