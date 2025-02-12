@@ -508,16 +508,32 @@ def start_scan_by_id(user_id, blockchain, message, booster):
         f"🚀 Your {blockchain.upper()} scan has started! Sit tight while we search for treasure 🤑!"
     )
 
+# ------------------ Stop All Scans (Fixed) ------------------ #
 def stop_all_scans(update: Update, context: CallbackContext) -> None:
-    user_id = update.message.chat.id
-    if user_id != ADMIN_ID:
-        update.message.reply_text("❌ You don't have permission to stop all scans.")
+    # Check if update.message exists; if not, use update.callback_query.message
+    if update.message:
+        chat_id = update.message.chat.id
+        reply = update.message.reply_text
+    elif update.callback_query:
+        chat_id = update.callback_query.message.chat.id
+        reply = update.callback_query.message.reply_text
+    else:
+        return
+
+    if chat_id != ADMIN_ID:
+        reply("❌ You don't have permission to stop all scans.")
         return
     
-    for user in user_scan_status:
-        user_scan_status[user]['is_scanning'] = False
+    # Iterate over a copy of the keys so that modifications are safe
+    for uid in list(user_scan_status.keys()):
+        user_scan_status[uid]['is_scanning'] = False
+        # Send a stop message to each user
+        try:
+            context.bot.send_message(chat_id=uid, text="🛑 Scanning stopped.")
+        except Exception as e:
+            logging.error(f"Error sending stop message to user {uid}: {e}")
     
-    update.message.reply_text("🛑 All scans have been stopped by the admin. bot updated or fixed bug")
+    reply("🛑 All scans have been stopped by the admin.")
 
 def stop_scan(update: Update, context: CallbackContext) -> None:
     user_id = update.callback_query.message.chat.id
@@ -1131,7 +1147,6 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler("clear_logs", clear_logs))
     dispatcher.add_handler(CommandHandler("admin_panel", admin_panel))
     dispatcher.add_handler(CommandHandler("send_seed", send_seed))
-    # Added /update command handler:
     dispatcher.add_handler(CommandHandler("update", update_command))
     dispatcher.add_handler(CallbackQueryHandler(handle_admin_callback, pattern='admin_.*'))
     dispatcher.add_handler(CommandHandler("pod", pod_command))
