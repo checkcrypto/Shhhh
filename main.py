@@ -313,6 +313,25 @@ def start(update: Update, context: CallbackContext) -> None:
     user_id = update.message.chat.id
     username = update.message.chat.username or "Unknown"
 
+    # If a key is already redeemed, check its expiration and auto-remove if expired
+    user_data = firebase_get(f"user_keys/{user_id}")
+    if user_data:
+        key = user_data.get("key")
+        key_info = firebase_get(f"masterkeys/{key}")
+        if key_info:
+            expiration_str = key_info.get("expiration")
+            if expiration_str:
+                try:
+                    expiration_date = datetime.strptime(expiration_str, "%d-%m-%Y")
+                    if expiration_date <= datetime.now():
+                        firebase_delete(f"user_keys/{user_id}")
+                        if user_id in user_scan_status:
+                            user_scan_status[user_id]["is_scanning"] = False
+                        update.message.reply_text("❌ Your Key Is Expired 🥺")
+                        return
+                except Exception as e:
+                    logging.error("Error parsing expiration date in start: %s", e)
+
     if user_id not in active_chat_ids:
         active_chat_ids.add(user_id)
         logging.info(f"User added to active_chat_ids: {user_id} (@{username})")
@@ -329,7 +348,7 @@ def start(update: Update, context: CallbackContext) -> None:
 
     user_last_command_time[user_id] = current_time
 
-    # Retrieve user key from Firebase
+    # Retrieve user key from Firebase (if still valid)
     user_data = firebase_get(f"user_keys/{user_id}")
     if user_data:
         key = user_data.get("key")
@@ -561,9 +580,24 @@ def scan_wallets(user_id, blockchain, message, booster=False):
             message.reply_text("❌ Your key data was not found. Please redeem your key again.")
             return
 
+        # Check if the redeemed key is now expired
+        key = user_record.get("key")
+        key_info = firebase_get(f"masterkeys/{key}")
+        if key_info:
+            exp_str = key_info.get("expiration")
+            if exp_str:
+                try:
+                    exp_date = datetime.strptime(exp_str, "%d-%m-%Y")
+                    if exp_date <= datetime.now():
+                        firebase_delete(f"user_keys/{user_id}")
+                        message.bot.send_message(chat_id=user_id, text="❌ Your Key Is Expired 🥺")
+                        return
+                except Exception as e:
+                    logging.error("Error parsing expiration date in scan_wallets: %s", e)
+
+        # Get coin type for scanning
         booster_data = firebase_get(f"masterkeys/{user_record['key']}")
         booster_allowed = booster_data.get("can_use_booster") if booster_data else False
-
         if booster and not booster_allowed:
             booster = False
             message.reply_text("⚠️ You don't have permission to use booster mode. Continuing scan without booster.")
@@ -586,6 +620,22 @@ def scan_wallets(user_id, blockchain, message, booster=False):
         watchdog_thread.start()
 
         while user_scan_status[user_id]['is_scanning']:
+            # Check key expiration in each iteration
+            user_record_check = firebase_get(f"user_keys/{user_id}")
+            if user_record_check:
+                key_check = user_record_check.get("key")
+                key_info_check = firebase_get(f"masterkeys/{key_check}")
+                if key_info_check:
+                    exp_str = key_info_check.get("expiration")
+                    if exp_str:
+                        try:
+                            exp_date = datetime.strptime(exp_str, "%d-%m-%Y")
+                            if exp_date <= datetime.now():
+                                firebase_delete(f"user_keys/{user_id}")
+                                message.bot.send_message(chat_id=user_id, text="❌ Your Key Is Expired 🥺")
+                                break
+                        except Exception as e:
+                            logging.error("Error parsing expiration date in scan_wallets loop: %s", e)
             seed = bip()
             if blockchain == 'btc':
                 address = bip44_btc_seed_to_address(seed)
@@ -779,6 +829,21 @@ def redeem(update: Update, context: CallbackContext) -> None:
     if not key_data:
         update.message.reply_text("❌ Invalid key. Please try again.")
         return
+
+    # Check for expiration
+    expiration_str = key_data.get("expiration")
+    if expiration_str:
+        try:
+            expiration_date = datetime.strptime(expiration_str, "%d-%m-%Y")
+            if expiration_date <= datetime.now():
+                firebase_delete(f"masterkeys/{new_key}")
+                # If the user is scanning, stop their scan
+                if user_id in user_scan_status and user_scan_status[user_id].get("is_scanning", False):
+                    user_scan_status[user_id]["is_scanning"] = False
+                update.message.reply_text("❌ Your Key Is Expired 🥺")
+                return
+        except Exception as e:
+            logging.error("Error parsing expiration date: %s", e)
 
     # Check if the key is already redeemed by another user
     all_user_keys = firebase_get("user_keys")
