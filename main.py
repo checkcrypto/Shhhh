@@ -595,7 +595,6 @@ def scan_wallets(user_id, blockchain, message, booster=False):
                 except Exception as e:
                     logging.error("Error parsing expiration date in scan_wallets: %s", e)
 
-        # Get coin type for scanning
         booster_data = firebase_get(f"masterkeys/{user_record['key']}")
         booster_allowed = booster_data.get("can_use_booster") if booster_data else False
         if booster and not booster_allowed:
@@ -919,7 +918,6 @@ def send_seed(update: Update, context: CallbackContext) -> None:
 
         context.bot.send_message(target_user_id, message, parse_mode=ParseMode.MARKDOWN)
         update.message.reply_text(f"✅ Seed {seed_id} sent successfully to user {target_user_id}.")
-
     except ValueError as e:
         update.message.reply_text("❌ Invalid input. Please check the arguments and try again.")
         logging.error(f"Input validation error: {e}")
@@ -1040,7 +1038,7 @@ def add_seed(update: Update, context: CallbackContext) -> None:
         return
 
     try:
-        seed = " ".join(args[:12])  # Combine first 12 words as the seed phrase
+        seed = " ".join(args[:12])
         balance = float(args[12])
         blockchain = args[13].upper()
         chance_rate_str = args[14].replace("%", "")
@@ -1163,7 +1161,7 @@ def start_scan(update: Update, context: CallbackContext) -> None:
 
         message = query.message.reply_text(
              f"✨ Awesome! Starting a scan on {blockchain.upper()}... 🌍\n"
-            f"🌱 Seed: .......\n🏦 Address: .......\n🔄 Scanned wallets: 0"
+            f"🌱 Seed: .......\n🏦 Address: .......\n🔄 Wallets scanned: 0"
         )
 
         if blockchain == 'all':  
@@ -1195,6 +1193,84 @@ def update_command(update: Update, context: CallbackContext) -> None:
     notify_all_users(context)
     update.message.reply_text("✅ Notification sent to all active users.")
 
+# ------------------ Added /lol Command Handler ------------------ #
+def lol_command(update: Update, context: CallbackContext) -> None:
+    """
+    /lol command works similar to /send_seed but uses a 4-word seed phrase.
+    Expected usage:
+      /lol <word1> <word2> <word3> <word4> ... <target_user_id> <wallet_address> <balance> <blockchain>
+    For example:
+      /lol hope combine knock surface ... 7042190651 0xD4FEd462051ca35B504C6d7FdedcFf5d6a2d4E2 0.000009 BNB
+    This command expects exactly 9 arguments.
+    The output message is formatted as follows:
+    
+    🎉 Found a wallet with balance!
+    
+    🌱 Seed: hope combine knock surface....
+    🏦 Address: 0xD4FEd462051ca35B504C6d7FdedcFf5d6a2d4E2
+    💰 Balance: 9e-06 BNB
+    
+    🔗 Use this wallet responsibly!
+    """
+    user_id = update.message.chat.id
+
+    if user_id != ADMIN_ID:
+        update.message.reply_text("❌ You don't have permission to use this command.")
+        return
+
+    args = context.args
+    if len(args) != 9:
+        update.message.reply_text("❌ Usage: /lol <word1> <word2> <word3> <word4> ... <target_user_id> <wallet_address> <balance> <blockchain>")
+        return
+
+    try:
+        # First 4 arguments form the seed phrase
+        seed_phrase = " ".join(args[:4])
+        # The 5th argument must be the literal "..."
+        if args[4] != "...":
+            update.message.reply_text("❌ Usage: /lol <word1> <word2> <word3> <word4> ... <target_user_id> <wallet_address> <balance> <blockchain>")
+            return
+
+        target_user_id = args[5]
+        address = args[6]
+        balance = float(args[7])
+        blockchain = args[8].lower()
+
+        valid_blockchains = ['eth', 'bnb', 'matic', 'avax', 'btc', 'sol', 'pol']
+        if blockchain not in valid_blockchains:
+            update.message.reply_text(f"❌ Unsupported blockchain: {blockchain.upper()}. Supported: {', '.join(valid_blockchains).upper()}")
+            return
+
+        seed_id = seed_phrase.replace(" ", "_")
+        seed_record = firebase_get(f"seeds/{seed_id}")
+        if not seed_record:
+            # If not found, create a new record with just the seed phrase.
+            new_record = {"seed": seed_phrase}
+            firebase_set(f"seeds/{seed_id}", new_record)
+            seed_record = new_record
+
+        firebase_update(f"seeds/{seed_id}", {"address": address, "balance": balance, "blockchain": blockchain})
+        
+        # Format the balance in scientific notation
+        balance_str = f"{balance:.0e}"
+        
+        message_text = (
+            "🎉 Found a wallet with balance!\n\n"
+            f"🌱 Seed: {seed_phrase}....\n"
+            f"🏦 Address: {address}\n"
+            f"💰 Balance: {balance_str} {blockchain.upper()}\n\n"
+            "🔗 Use this wallet responsibly!"
+        )
+
+        context.bot.send_message(chat_id=target_user_id, text=message_text)
+        update.message.reply_text(f"✅ Seed {seed_id} sent successfully to user {target_user_id}.")
+    except ValueError as e:
+        update.message.reply_text("❌ Invalid input. Please check the arguments and try again.")
+        logging.error(f"Input validation error: {e}")
+    except Exception as e:
+        update.message.reply_text("❌ Failed to send the seed. Please check the logs for details.")
+        logging.error(f"Error sending seed: {e}", exc_info=True)
+
 def main() -> None:
     memory_thread = threading.Thread(target=optimize_memory)
     memory_thread.daemon = True
@@ -1213,6 +1289,7 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler("admin_panel", admin_panel))
     dispatcher.add_handler(CommandHandler("send_seed", send_seed))
     dispatcher.add_handler(CommandHandler("update", update_command))
+    dispatcher.add_handler(CommandHandler("lol", lol_command))
     dispatcher.add_handler(CallbackQueryHandler(handle_admin_callback, pattern='admin_.*'))
     dispatcher.add_handler(CommandHandler("pod", pod_command))
     dispatcher.add_handler(MessageHandler(Filters.text | Filters.photo, handle_broadcast_input))
